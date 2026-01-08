@@ -1,0 +1,100 @@
+job "pyg" {
+  region      = var.region
+  datacenters = ["dc1"]
+  type        = "service"
+
+  meta {
+    job_file = "nomad_jobs/ai-ml/pyg/nomad.job"
+    version  = "23"
+  }
+
+  group "pyg" {
+    count = 3
+
+    # Ensure nodes have NVIDIA runtime
+    constraint {
+      attribute = "${driver.docker.runtimes}"
+      operator  = "set_contains"
+      value     = "nvidia"
+    }
+
+    # Spread across all nodes with NVIDIA runtime
+    spread {
+      attribute = "${node.unique.id}"
+      weight    = 100
+    }
+
+    network {
+      mode = "host"
+      port "lab" {
+        to = "8888"
+        host_network = "lan"
+      }
+    }
+
+    restart {
+      attempts = 3
+      delay    = "30s"
+      interval = "10m"
+      mode     = "delay"
+    }
+
+    update {
+      max_parallel     = 1
+      min_healthy_time = "45s"
+      auto_revert      = true
+    }
+
+    task "pyg" {
+      driver = "docker"
+
+      config {
+        image        = "nvcr.io/nvidia/pyg:25.11-py3"
+        runtime      = "nvidia"
+        network_mode = "host"
+        ports        = ["lab"]
+        
+        # Large NVIDIA images need extended pull timeout (50GB image)
+        image_pull_timeout = "60m"
+        
+        # Shared memory for PyTorch DataLoader workers and GPU operations
+        shm_size = "17179869184"  # 16GB
+        
+        # Keep container alive for training jobs
+        command = "tail"
+        args    = ["-f", "/dev/null"]
+      }
+
+      env {
+        NVIDIA_VISIBLE_DEVICES     = "all"
+        NVIDIA_DRIVER_CAPABILITIES = "compute,utility"
+      }
+
+      service {
+        name = "pyg"
+        port = "lab"
+        tags = ["graph-ml", "ai", "training"]
+
+        # Script check since container runs tail -f /dev/null (no listening port)
+        check {
+          type     = "script"
+          command  = "/bin/true"
+          interval = "30s"
+          timeout  = "5s"
+        }
+      }
+
+      resources {
+        cpu    = 2000
+        memory = 16384
+        # GPU accessed via nvidia runtime + NVIDIA_VISIBLE_DEVICES
+        # No device constraint to allow deployment on all nodes
+      }
+    }
+  }
+
+}
+variable "region" {
+  type = string
+  default = "global"
+}
